@@ -1,0 +1,23 @@
+addyio:
+  api_key: ""               # or env ADDYIO_API_KEY
+  base_url: "https://app.addy.io"
+  alias_domain: "anonaddy.com"
+
+keepass:
+  db_path: "/path/to/passwords.kdbx"
+  password_env: "KEEPASS_PASSWORD"  # blank = prompt
+
+imap:
+  server: "imap.example.com"
+  port: 993
+  username: "you@example.com"
+  password_env: "IMAP_PASSWORD"
+  folder: "INBOX"
+  tls: true
+
+db:
+  path: "~/.local/share/email-monitor/data.db"
+
+notify:
+  ntfy_url: "https://ntfy.sh/your-topic"
+  # ntfy_token: ""  # optional, for private topics
