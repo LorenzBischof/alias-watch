@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -23,6 +23,7 @@ const (
 	modeAdd
 	modeConfirmDelete
 	modeDetail
+	modeEditTitle
 )
 
 type pane int
@@ -45,7 +46,6 @@ type Model struct {
 	height int
 
 	aliases     []db.Alias
-	allAliases  []db.Alias
 	accounts    map[string][]string // alias email → account names
 	lastSeen    map[string]time.Time
 	senders     []db.KnownSender
@@ -53,9 +53,9 @@ type Model struct {
 	entries     []senderListEntry
 	senderIndex map[string][]string // alias email -> sender emails
 
-	focus       pane
-	aliasTable  table.Model
-	senderTable table.Model
+	focus      pane
+	aliasList  list.Model
+	senderList list.Model
 
 	currentMode  mode
 	formInputs   []textinput.Model
@@ -73,10 +73,11 @@ func New(store *db.Store) (*Model, error) {
 	m := &Model{
 		store:       store,
 		keys:        DefaultKeyMap(),
-		aliasTable:  newAliasTable(),
-		senderTable: newSenderTable(),
+		aliasList:   newAliasList(),
+		senderList:  newSenderList(),
 		filterInput: newFilterInput(),
 	}
+	m.aliasList.Filter = m.aliasFilter
 	if err := m.reloadAliases(); err != nil {
 		return nil, err
 	}
@@ -115,6 +116,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirmDelete(msg)
 		case modeDetail:
 			return m.updateDetail(msg)
+		case modeEditTitle:
+			return m.updateEditTitle(msg)
 		}
 	}
 	return m, nil
@@ -132,6 +135,18 @@ func (m *Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleFocus()
 		return m, nil
 
+	case msg.String() == "left":
+		if m.focus != paneLeft {
+			m.focus = paneLeft
+		}
+		return m, nil
+
+	case msg.String() == "right":
+		if m.focus != paneRight {
+			m.focus = paneRight
+		}
+		return m, nil
+
 	case msg.String() == "/" && m.focus == paneLeft:
 		m.currentMode = modeFilter
 		m.filterInput.Focus()
@@ -143,11 +158,27 @@ func (m *Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.toggleFocus()
 			return m, nil
 		}
-		prev := m.aliasTable.Cursor()
+		if msg.String() == "r" {
+			alias := m.currentAlias()
+			if alias == nil {
+				return m, nil
+			}
+			ti := textinput.New()
+			ti.Placeholder = "alias title"
+			ti.CharLimit = 256
+			ti.SetValue(alias.Title)
+			ti.Focus()
+			m.formInputs = []textinput.Model{ti}
+			m.formFocusIdx = 0
+			m.currentMode = modeEditTitle
+			m.statusMsg = ""
+			return m, textinput.Blink
+		}
+		prev := m.aliasList.Index()
 		var cmd tea.Cmd
-		m.aliasTable, cmd = m.aliasTable.Update(msg)
-		if m.aliasTable.Cursor() != prev {
-			m.senderTable.GotoTop()
+		m.aliasList, cmd = m.aliasList.Update(msg)
+		if m.aliasList.Index() != prev {
+			m.senderList.Select(0)
 			if err := m.reloadSenders(); err != nil {
 				m.err = err
 			}
@@ -163,7 +194,7 @@ func (m *Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "a":
+	case "n":
 		m.currentMode = modeAdd
 		m.formInputs = newAddForm()
 		m.formFocusIdx = 0
@@ -186,7 +217,7 @@ func (m *Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	default:
 		var cmd tea.Cmd
-		m.senderTable, cmd = m.senderTable.Update(msg)
+		m.senderList, cmd = m.senderList.Update(msg)
 		return m, cmd
 	}
 }
@@ -210,12 +241,17 @@ func (m *Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentMode = modeBrowse
 		m.filterInput.Blur()
 		return m.updateBrowse(msg)
+	case "left", "right":
+		// Leave filter edit mode and execute the key in normal browse mode.
+		m.currentMode = modeBrowse
+		m.filterInput.Blur()
+		return m.updateBrowse(msg)
 	case "up", "down":
-		prev := m.aliasTable.Cursor()
+		prev := m.aliasList.Index()
 		var cmd tea.Cmd
-		m.aliasTable, cmd = m.aliasTable.Update(msg)
-		if m.aliasTable.Cursor() != prev {
-			m.senderTable.GotoTop()
+		m.aliasList, cmd = m.aliasList.Update(msg)
+		if m.aliasList.Index() != prev {
+			m.senderList.Select(0)
 			if err := m.reloadSenders(); err != nil {
 				m.err = err
 			}
@@ -278,6 +314,74 @@ func (m *Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+func (m *Model) updateEditTitle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.currentMode = modeBrowse
+		m.statusMsg = ""
+		return m, nil
+	case "enter":
+		return m, m.submitEditTitle()
+	}
+	var batchCmds []tea.Cmd
+	m.formInputs, batchCmds = updateFormInputs(m.formInputs, 0, msg)
+	return m, tea.Batch(batchCmds...)
+}
+
+func (m *Model) submitEditTitle() tea.Cmd {
+	alias := m.currentAlias()
+	if alias == nil {
+		m.currentMode = modeBrowse
+		return nil
+	}
+	aliasEmail := alias.Email
+	desc := strings.TrimSpace(m.formInputs[0].Value())
+	if err := m.store.UpdateAliasTitle(aliasEmail, desc); err != nil {
+		m.err = err
+		m.currentMode = modeBrowse
+		return nil
+	}
+	m.err = nil
+	m.statusMsg = "Title updated."
+	m.currentMode = modeBrowse
+	_ = m.reloadAliases()
+	return nil
+}
+
+func (m *Model) renderEditTitle() string {
+	alias := m.currentAlias()
+	if alias == nil {
+		return m.renderMainView()
+	}
+
+	inputLine := "> Title: " + m.formInputs[0].View()
+	content := fmt.Sprintf("Edit alias: %s\n\n%s\n\n[Enter] save  [Esc] cancel",
+		alias.Email, inputLine)
+
+	popupW := 70
+	if popupW > m.width-4 {
+		popupW = m.width - 4
+	}
+	popup := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorFocused).
+		Padding(1, 2).
+		Width(popupW).
+		Render(content)
+
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		popup,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceBackground(colorBackdrop),
+	)
 }
 
 func (m *Model) renderDetail() string {
@@ -384,15 +488,15 @@ func (m *Model) View() string {
 	if m.currentMode == modeDetail {
 		return m.renderDetail()
 	}
+	if m.currentMode == modeEditTitle {
+		return m.renderEditTitle()
+	}
 	return m.renderMainView()
 }
 
 func (m *Model) renderMainView() string {
 	// Border overhead: 2 cols per pane (left+right border), 1 col gutter
 	leftW, rightW := m.paneWidths()
-
-	leftTitle := "Aliases"
-	rightTitle := "Known Senders"
 
 	leftBorder := styleUnfocusedBorder
 	rightBorder := styleUnfocusedBorder
@@ -410,25 +514,54 @@ func (m *Model) renderMainView() string {
 		innerH = 1
 	}
 
+	aliasListView := strings.TrimPrefix(m.aliasList.View(), "\n")
 	leftContent := leftBorder.
 		Width(leftW).
 		Height(innerH).
-		Render(fmt.Sprintf(" %s\n%s", leftTitle, m.aliasTable.View()))
+		Render(fmt.Sprintf(" %s\n%s", styleLeftTitle.Render("Aliases"), aliasListView))
 
-	// Truncate rightTitle so it never wraps inside the box.
-	rightTitle = truncate(rightTitle, rightW-2) // -2 for the leading space + margin
+	selectedAlias := m.currentAlias()
 
-	meta := m.renderAliasMeta()
+	// Right panel header mirrors left list format: title (white), email (grey).
+	aliasTitle := "-"
+	aliasEmail := "-"
+	if selectedAlias != nil {
+		if t := strings.TrimSpace(selectedAlias.Title); t != "" {
+			aliasTitle = t
+		}
+		if selectedAlias.Email != "" {
+			aliasEmail = selectedAlias.Email
+		}
+	}
+	rightInnerW := max(1, rightW-2)
+	headerPrefix := " "
+	headerGap := " "
+	headerOverhead := len([]rune(headerPrefix)) + len([]rune(headerGap))
+	maxTitle := rightInnerW - headerOverhead - len([]rune(aliasEmail))
+	if maxTitle < 1 {
+		maxTitle = 1
+	}
+	aliasTitle = clampRunes(aliasTitle, maxTitle)
+	maxEmail := rightInnerW - headerOverhead - len([]rune(aliasTitle))
+	if maxEmail < 1 {
+		maxEmail = 1
+	}
+	aliasEmail = clampRunes(aliasEmail, maxEmail)
+	aliasHeaderText := headerPrefix + styleAliasHeader.Render(aliasTitle) + headerGap + styleAliasMeta.Render(aliasEmail)
+	aliasHeader := lipgloss.NewStyle().MaxWidth(rightW - 2).Render(aliasHeaderText)
+
+	meta := styleAliasMeta.Render(m.renderAliasMeta(rightInnerW))
+	senderListView := strings.TrimPrefix(m.senderList.View(), "\n")
 
 	var rightInner string
 	switch m.currentMode {
 	case modeAdd:
-		rightInner = fmt.Sprintf(" %s\n%s\n\nAdd Sender:\n%s",
-			rightTitle, meta, renderForm(m.formInputs, m.formFocusIdx))
+		rightInner = fmt.Sprintf("%s\n\nAdd Sender:\n%s\n%s",
+			aliasHeader, renderForm(m.formInputs, m.formFocusIdx), meta)
 	case modeConfirmDelete:
-		rightInner = fmt.Sprintf(" %s\n%s\n%s", rightTitle, meta, m.senderTable.View())
+		rightInner = fmt.Sprintf("%s\n%s\n%s", aliasHeader, senderListView, meta)
 	default:
-		rightInner = fmt.Sprintf(" %s\n%s\n%s", rightTitle, meta, m.senderTable.View())
+		rightInner = fmt.Sprintf("%s\n%s\n%s", aliasHeader, senderListView, meta)
 	}
 
 	rightContent := rightBorder.
@@ -445,7 +578,7 @@ func (m *Model) renderMainView() string {
 		status = styleStatusBar.Render(m.statusMsg)
 	}
 
-	help := styleHelp.Render("Tab/Enter: switch pane | / filter | [a]dd [d]el | Enter: detail | q: quit")
+	help := styleHelp.Render(m.helpText())
 	if m.currentMode == modeFilter {
 		cmdline := styleStatusBar.Render(" / " + m.filterInput.View())
 		return strings.Join([]string{paneRow, status, cmdline, help}, "\n")
@@ -457,28 +590,25 @@ func (m *Model) renderMainView() string {
 	return strings.Join([]string{paneRow, status, help}, "\n")
 }
 
-func (m *Model) renderAliasMeta() string {
-	if len(m.aliases) == 0 {
-		return " Alias: -\n Title: -\n Active: -\n Accounts: -\n Last Seen: -"
+func (m *Model) renderAliasMeta(width int) string {
+	labelWidth := len(" Last Seen: ")
+	valueWidth := width - labelWidth
+	if valueWidth < 1 {
+		valueWidth = 1
 	}
-	idx := m.aliasTable.Cursor()
-	if idx < 0 || idx >= len(m.aliases) {
-		return " Alias: -\n Title: -\n Active: -\n Accounts: -\n Last Seen: -"
+	a := m.currentAlias()
+	if a == nil {
+		return " Title: -\n Email: -\n Active: -\n Last Seen: -"
 	}
 
-	a := m.aliases[idx]
-	title := strings.TrimSpace(a.Description)
+	title := strings.TrimSpace(a.Title)
 	if title == "" {
 		title = "-"
 	}
+
 	active := "yes"
 	if !a.Active {
 		active = "no"
-	}
-
-	accs := strings.Join(m.accounts[a.Email], ", ")
-	if accs == "" {
-		accs = "UNMAPPED"
 	}
 
 	lastSeen := "-"
@@ -487,26 +617,69 @@ func (m *Model) renderAliasMeta() string {
 	}
 
 	return fmt.Sprintf(
-		" Alias: %s\n Title: %s\n Active: %s\n Accounts: %s\n Last Seen: %s",
-		a.Email,
-		title,
-		active,
-		accs,
-		lastSeen,
+		" Title: %s\n Email: %s\n Active: %s\n Last Seen: %s",
+		clampRunes(title, valueWidth),
+		clampRunes(a.Email, valueWidth),
+		clampRunes(active, valueWidth),
+		clampRunes(lastSeen, valueWidth),
 	)
+}
+
+func clampRunes(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	r := []rune(strings.ReplaceAll(s, "\n", " "))
+	if len(r) <= maxWidth {
+		return string(r)
+	}
+	if maxWidth == 1 {
+		return "…"
+	}
+	return string(r[:maxWidth-1]) + "…"
 }
 
 // --- helpers ---
 
+func (m *Model) helpText() string {
+	switch m.currentMode {
+	case modeFilter:
+		return "Type to filter | Enter: done | Esc: clear | Tab/←/→: switch pane | q: quit"
+	case modeAdd:
+		return "Tab/Shift+Tab: switch field | Enter: submit | Esc: cancel"
+	case modeConfirmDelete:
+		return "Delete selected entry? Enter/y: confirm | Esc/n: cancel"
+	case modeEditTitle:
+		return "Enter: save | Esc: cancel"
+	case modeDetail:
+		entry := m.currentEntry()
+		parts := []string{"Esc/q: close", "e: toggle domain rule", "q: quit"}
+		if entry != nil && !entry.IsDomain {
+			parts = append(parts, "f: toggle flagged")
+		}
+		return strings.Join(parts, " | ")
+	}
+
+	if m.focus == paneLeft {
+		return "Tab/→/Enter: switch pane | /: filter | r: rename | q: quit"
+	}
+
+	parts := []string{"Tab/←: switch pane", "n: add sender"}
+	if len(m.entries) > 0 {
+		parts = append(parts, "Enter: detail", "d: delete", "e: toggle domain rule")
+		if entry := m.currentEntry(); entry != nil && !entry.IsDomain {
+			parts = append(parts, "f: toggle flagged")
+		}
+	}
+	parts = append(parts, "q: quit")
+	return strings.Join(parts, " | ")
+}
+
 func (m *Model) toggleFocus() {
 	if m.focus == paneLeft {
 		m.focus = paneRight
-		m.aliasTable.Blur()
-		m.senderTable.Focus()
 	} else {
 		m.focus = paneLeft
-		m.senderTable.Blur()
-		m.aliasTable.Focus()
 	}
 }
 
@@ -531,16 +704,6 @@ func newFilterInput() textinput.Model {
 	return ti
 }
 
-func senderColumnWidth(rightPaneWidth int) int {
-	// Reserve space for table rendering so content does not touch/overflow
-	// pane borders.
-	w := rightPaneWidth - 3
-	if w < 1 {
-		return 1
-	}
-	return w
-}
-
 func (m *Model) resizePanes() {
 	leftW, rightW := m.paneWidths()
 	leftTableH := m.height - 6 // borders + title row + status + help
@@ -548,38 +711,20 @@ func (m *Model) resizePanes() {
 		leftTableH = 1
 	}
 
-	// Left pane: single alias email column.
-	emailW := leftW
-	m.aliasTable.SetColumns([]table.Column{
-		{Title: "Alias Email", Width: emailW},
-	})
-	m.aliasTable.SetWidth(leftW)
-	if leftTableH > 1 {
-		leftTableH--
-	}
-	m.aliasTable.SetHeight(leftTableH)
+	// Left pane list: title on first line, alias email on second line.
+	m.aliasList.SetSize(leftW, leftTableH)
 
-	// Right pane: reserve rows for alias metadata shown above the sender table.
-	rightTableH := m.height - 12
+	// Right pane: reserve rows for header + metadata + separator rows.
+	// Keep this in sync with rightInner format: header + "\n" + sender list + "\n" + meta.
+	rightTableH := m.height - 11
 	if rightTableH < 1 {
 		rightTableH = 1
 	}
-	senderColW := senderColumnWidth(rightW)
-	m.senderTable.SetColumns([]table.Column{
-		{Title: "Sender / Domain", Width: senderColW},
-	})
-	m.senderTable.SetWidth(rightW)
-	m.senderTable.SetHeight(rightTableH)
+	m.senderList.SetSize(rightW, rightTableH)
 }
 
 func (m *Model) reloadAliases() error {
-	var prevAlias string
-	if len(m.aliases) > 0 {
-		idx := m.aliasTable.Cursor()
-		if idx >= 0 && idx < len(m.aliases) {
-			prevAlias = m.aliases[idx].Email
-		}
-	}
+	prevAlias := m.currentAliasEmail()
 
 	aliases, err := m.store.AllAliases()
 	if err != nil {
@@ -607,7 +752,6 @@ func (m *Model) reloadAliases() error {
 	})
 
 	m.aliases = aliases
-	m.allAliases = aliases
 	m.lastSeen = lastSeen
 
 	// Pre-load accounts for all aliases
@@ -628,35 +772,26 @@ func (m *Model) reloadAliases() error {
 		m.senderIndex[ks.AliasEmail] = append(m.senderIndex[ks.AliasEmail], ks.SenderEmail)
 	}
 
+	m.aliasList.SetItems(buildAliasItems(m.aliases))
 	m.applyAliasFilter(m.filterInput.Value())
-	if prevAlias != "" && len(m.aliases) > 0 {
-		for i, a := range m.aliases {
-			if a.Email == prevAlias {
-				m.aliasTable.SetCursor(i)
-				break
-			}
-		}
-	}
+	m.selectAliasByEmail(prevAlias)
 	return nil
 }
 
 func (m *Model) reloadSenders() error {
-	if len(m.aliases) == 0 {
+	alias := m.currentAlias()
+	if alias == nil {
 		m.senders = nil
 		m.domains = nil
 		m.entries = nil
-		m.senderTable.SetRows(nil)
+		m.senderList.SetItems(nil)
 		return nil
 	}
-	idx := m.aliasTable.Cursor()
-	if idx < 0 || idx >= len(m.aliases) {
-		return nil
-	}
-	senders, err := m.store.KnownSendersForAlias(m.aliases[idx].Email)
+	senders, err := m.store.KnownSendersForAlias(alias.Email)
 	if err != nil {
 		return err
 	}
-	domains, err := m.store.KnownDomainsForAlias(m.aliases[idx].Email)
+	domains, err := m.store.KnownDomainsForAlias(alias.Email)
 	if err != nil {
 		return err
 	}
@@ -665,19 +800,18 @@ func (m *Model) reloadSenders() error {
 		m.domains[d.SenderDomain] = d
 	}
 	m.senders = senders
-	aliasEmail := m.aliases[idx].Email
+	aliasEmail := alias.Email
 	m.senderIndex[aliasEmail] = make([]string, 0, len(senders))
 	for _, s := range senders {
 		m.senderIndex[aliasEmail] = append(m.senderIndex[aliasEmail], s.SenderEmail)
 	}
 	m.entries = m.buildSenderListEntries(senders)
-	_, rightW := m.paneWidths()
-	m.senderTable.SetRows(buildSenderRows(m.entries, senderColumnWidth(rightW)))
+	m.senderList.SetItems(buildSenderItems(m.entries))
 	return nil
 }
 
 func (m *Model) currentEntry() *senderListEntry {
-	idx := m.senderTable.Cursor()
+	idx := m.senderList.Index()
 	if idx < 0 || idx >= len(m.entries) {
 		return nil
 	}
@@ -712,9 +846,9 @@ func (m *Model) toggleFlagged() tea.Cmd {
 	} else {
 		m.statusMsg = "Unflagged sender."
 	}
-	cursor := m.senderTable.Cursor()
+	cursor := m.senderList.Index()
 	_ = m.reloadSenders()
-	m.senderTable.SetCursor(cursor)
+	m.senderList.Select(cursor)
 	return nil
 }
 
@@ -723,14 +857,11 @@ func (m *Model) toggleDomainRule() tea.Cmd {
 	if entry == nil {
 		return nil
 	}
-	if len(m.aliases) == 0 {
+	alias := m.currentAlias()
+	if alias == nil {
 		return nil
 	}
-	aliasIdx := m.aliasTable.Cursor()
-	if aliasIdx < 0 || aliasIdx >= len(m.aliases) {
-		return nil
-	}
-	aliasEmail := m.aliases[aliasIdx].Email
+	aliasEmail := alias.Email
 	domain := entry.Domain
 	if domain == "" && entry.Sender != nil {
 		domain = entry.Sender.SenderDomain
@@ -762,9 +893,9 @@ func (m *Model) toggleDomainRule() tea.Cmd {
 	}
 
 	m.err = nil
-	cursor := m.senderTable.Cursor()
+	cursor := m.senderList.Index()
 	_ = m.reloadSenders()
-	m.senderTable.SetCursor(cursor)
+	m.senderList.Select(cursor)
 	return nil
 }
 
@@ -824,61 +955,96 @@ func (m *Model) senderEmailsForDomain(domain string) []string {
 }
 
 func (m *Model) applyAliasFilter(query string) {
-	prevAlias := ""
-	if len(m.aliases) > 0 {
-		idx := m.aliasTable.Cursor()
-		if idx >= 0 && idx < len(m.aliases) {
-			prevAlias = m.aliases[idx].Email
-		}
-	}
-
+	prevAlias := m.currentAliasEmail()
 	q := strings.TrimSpace(query)
+	m.filterInput.SetValue(q)
 	if q == "" {
-		m.aliases = append([]db.Alias(nil), m.allAliases...)
+		m.aliasList.ResetFilter()
 	} else {
-		var senderMatches []db.Alias
-		var aliasOnlyMatches []db.Alias
-		for _, a := range m.allAliases {
-			aliasMatch := fuzzyMatch(a.Email, q)
-			senderMatch := false
-			for _, senderEmail := range m.senderIndex[a.Email] {
-				if fuzzyMatch(senderEmail, q) {
-					senderMatch = true
-					break
-				}
-			}
-			if !aliasMatch && !senderMatch {
-				continue
-			}
-			if senderMatch {
-				senderMatches = append(senderMatches, a)
-			} else {
-				aliasOnlyMatches = append(aliasOnlyMatches, a)
-			}
-		}
-		m.aliases = append(senderMatches, aliasOnlyMatches...)
+		m.aliasList.SetFilterText(q)
 	}
-
-	m.aliasTable.SetRows(buildAliasRows(m.aliases))
-	if len(m.aliases) == 0 {
+	if prevAlias != "" {
+		m.selectAliasByEmail(prevAlias)
+	}
+	if m.currentAlias() == nil {
 		m.senders = nil
+		m.domains = nil
 		m.entries = nil
-		m.senderTable.SetRows(nil)
+		m.senderList.SetItems(nil)
 		return
 	}
+	m.senderList.Select(0)
+	_ = m.reloadSenders()
+}
 
-	cursor := 0
-	if prevAlias != "" {
-		for i, a := range m.aliases {
-			if a.Email == prevAlias {
-				cursor = i
-				break
-			}
+func (m *Model) aliasFilter(term string, _ []string) []list.Rank {
+	q := strings.TrimSpace(strings.ToLower(term))
+	if q == "" {
+		return nil
+	}
+	type scoredRank struct {
+		rank  list.Rank
+		score int
+	}
+	ranks := make([]scoredRank, 0, len(m.aliases))
+	for i, a := range m.aliases {
+		score := aliasMatchScore(a, q)
+		if senderScore := senderMatchScore(m.senderIndex[a.Email], q); senderScore > score {
+			score = senderScore
+		}
+		if score < 0 {
+			continue
+		}
+		ranks = append(ranks, scoredRank{
+			rank: list.Rank{Index: i},
+			score: score,
+		})
+	}
+	sort.SliceStable(ranks, func(i, j int) bool {
+		return ranks[i].score > ranks[j].score
+	})
+	out := make([]list.Rank, len(ranks))
+	for i := range ranks {
+		out[i] = ranks[i].rank
+	}
+	return out
+}
+
+func aliasMatchScore(a db.Alias, q string) int {
+	best := -1
+	if score := matchScore(strings.ToLower(strings.TrimSpace(a.Title)), q, 420, 390, 360, 320); score > best {
+		best = score
+	}
+	if score := matchScore(strings.ToLower(strings.TrimSpace(a.Email)), q, 280, 250, 220, 180); score > best {
+		best = score
+	}
+	return best
+}
+
+func senderMatchScore(senders []string, q string) int {
+	best := -1
+	for _, sender := range senders {
+		score := matchScore(strings.ToLower(sender), q, 340, 320, 290, 240)
+		if score > best {
+			best = score
 		}
 	}
-	m.aliasTable.SetCursor(cursor)
-	m.senderTable.GotoTop()
-	_ = m.reloadSenders()
+	return best
+}
+
+func matchScore(value, q string, exact, prefix, contains, fuzzy int) int {
+	switch {
+	case value == q:
+		return exact
+	case strings.HasPrefix(value, q):
+		return prefix
+	case strings.Contains(value, q):
+		return contains
+	case fuzzyMatch(value, q):
+		return fuzzy
+	default:
+		return -1
+	}
 }
 
 func fuzzyMatch(value, query string) bool {
@@ -910,16 +1076,13 @@ func (m *Model) confirmDelete() tea.Cmd {
 	if entry == nil {
 		return nil
 	}
-	m.senderTable.GotoTop()
+	m.senderList.Select(0)
 	if entry.IsDomain {
-		if len(m.aliases) == 0 {
+		alias := m.currentAlias()
+		if alias == nil {
 			return nil
 		}
-		aliasIdx := m.aliasTable.Cursor()
-		if aliasIdx < 0 || aliasIdx >= len(m.aliases) {
-			return nil
-		}
-		aliasEmail := m.aliases[aliasIdx].Email
+		aliasEmail := alias.Email
 		if err := m.store.DeleteKnownDomain(aliasEmail, entry.Domain); err != nil {
 			m.err = err
 			return nil
@@ -979,11 +1142,11 @@ func (m *Model) submitAddForm() tea.Cmd {
 	if len(m.aliases) == 0 {
 		return nil
 	}
-	aliasIdx := m.aliasTable.Cursor()
-	if aliasIdx < 0 || aliasIdx >= len(m.aliases) {
+	alias := m.currentAlias()
+	if alias == nil {
 		return nil
 	}
-	aliasEmail := m.aliases[aliasIdx].Email
+	aliasEmail := alias.Email
 
 	now := time.Now()
 	ks := db.KnownSender{
@@ -994,7 +1157,7 @@ func (m *Model) submitAddForm() tea.Cmd {
 		LastSeen:     now,
 	}
 
-	m.senderTable.GotoTop()
+	m.senderList.Select(0)
 	_, err = m.store.UpsertKnownSender(ks)
 	if err != nil {
 		m.err = err
@@ -1005,6 +1168,44 @@ func (m *Model) submitAddForm() tea.Cmd {
 	m.currentMode = modeBrowse
 	_ = m.reloadSenders()
 	return nil
+}
+
+func (m *Model) currentAliasEmail() string {
+	alias := m.currentAlias()
+	if alias == nil {
+		return ""
+	}
+	return alias.Email
+}
+
+func (m *Model) currentAlias() *db.Alias {
+	item, ok := m.aliasList.SelectedItem().(aliasListItem)
+	if !ok {
+		return nil
+	}
+	for i := range m.aliases {
+		if m.aliases[i].Email == item.email {
+			return &m.aliases[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) selectAliasByEmail(email string) {
+	if email == "" {
+		return
+	}
+	visible := m.aliasList.VisibleItems()
+	for i := range visible {
+		item, ok := visible[i].(aliasListItem)
+		if !ok {
+			continue
+		}
+		if item.email == email {
+			m.aliasList.Select(i)
+			return
+		}
+	}
 }
 
 // truncate shortens s to at most maxRunes runes, appending "…" if truncated.

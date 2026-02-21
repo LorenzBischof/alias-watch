@@ -23,7 +23,7 @@ func TestUpsertAlias(t *testing.T) {
 		Email:       "abc@user.anonaddy.com",
 		AddyID:      "addy-123",
 		Active:      true,
-		Description: "test",
+		Title: "test",
 		SyncedAt:    now,
 	}
 	if err := s.UpsertAlias(a); err != nil {
@@ -42,14 +42,14 @@ func TestUpsertAlias(t *testing.T) {
 		t.Errorf("unexpected alias: %+v", got)
 	}
 
-	// Update
-	a.Description = "updated"
+	// Re-sync with a different title: existing non-empty value must be preserved.
+	a.Title = "from addy.io again"
 	if err := s.UpsertAlias(a); err != nil {
 		t.Fatalf("upsert update: %v", err)
 	}
 	aliases, _ = s.AllAliases()
-	if aliases[0].Description != "updated" {
-		t.Errorf("description not updated")
+	if aliases[0].Title != "test" {
+		t.Errorf("title should be preserved on re-sync, got %q", aliases[0].Title)
 	}
 }
 
@@ -308,6 +308,57 @@ func TestDomainFamiliarity(t *testing.T) {
 	count, _ = s.CountKnownSendersByDomain(alias, "unknown.com")
 	if count != 0 {
 		t.Errorf("want 0 for unknown domain, got %d", count)
+	}
+}
+
+func TestUpdateAliasTitle(t *testing.T) {
+	s := openTestDB(t)
+	alias := "abc@user.anonaddy.com"
+
+	if err := s.UpsertAlias(Alias{Email: alias, AddyID: "1", Active: true, Title: "original", SyncedAt: time.Now()}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if err := s.UpdateAliasTitle(alias, "edited locally"); err != nil {
+		t.Fatalf("update title: %v", err)
+	}
+
+	// Sync should NOT overwrite the locally-edited title.
+	if err := s.UpsertAlias(Alias{Email: alias, AddyID: "1", Active: true, Title: "from addy.io", SyncedAt: time.Now()}); err != nil {
+		t.Fatalf("upsert after edit: %v", err)
+	}
+
+	aliases, err := s.AllAliases()
+	if err != nil {
+		t.Fatalf("all aliases: %v", err)
+	}
+	if len(aliases) != 1 {
+		t.Fatalf("want 1 alias, got %d", len(aliases))
+	}
+	if aliases[0].Title != "edited locally" {
+		t.Errorf("want title 'edited locally', got %q", aliases[0].Title)
+	}
+}
+
+func TestUpsertAlias_PopulatesEmptyTitle(t *testing.T) {
+	s := openTestDB(t)
+	alias := "abc@user.anonaddy.com"
+
+	// First sync: empty title → should be populated from supplied value.
+	if err := s.UpsertAlias(Alias{Email: alias, AddyID: "1", Active: true, Title: "", SyncedAt: time.Now()}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	// Second sync: supplies a value for an alias that had empty title.
+	if err := s.UpsertAlias(Alias{Email: alias, AddyID: "1", Active: true, Title: "GitHub", SyncedAt: time.Now()}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	aliases, err := s.AllAliases()
+	if err != nil {
+		t.Fatalf("all aliases: %v", err)
+	}
+	if aliases[0].Title != "GitHub" {
+		t.Errorf("want title 'GitHub', got %q", aliases[0].Title)
 	}
 }
 

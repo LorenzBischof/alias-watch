@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS aliases (
     email       TEXT PRIMARY KEY,
     addy_id     TEXT NOT NULL,
     active      INTEGER NOT NULL DEFAULT 1,
-    description TEXT,
+    title TEXT,
     synced_at   TEXT NOT NULL
 );
 

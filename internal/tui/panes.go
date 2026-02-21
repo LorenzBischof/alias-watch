@@ -3,74 +3,120 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lorenzbischof/email-monitoring/internal/db"
 )
 
-// aliasColumns defines the left-pane column layout.
-var aliasColumns = []table.Column{
-	{Title: "Alias Email", Width: 40},
+type aliasListItem struct {
+	title string
+	email string
 }
 
-// buildAliasRows converts aliases into table rows.
-func buildAliasRows(aliases []db.Alias) []table.Row {
-	rows := make([]table.Row, 0, len(aliases))
-	for _, a := range aliases {
-		rows = append(rows, table.Row{a.Email})
+func (i aliasListItem) Title() string {
+	if i.title == "" {
+		return i.email
 	}
-	return rows
+	return i.title + " " + styleAliasMeta.Render(i.email)
 }
 
-// buildSenderRows converts sender/domain entries into table rows.
-func buildSenderRows(entries []senderListEntry, width int) []table.Row {
-	rows := make([]table.Row, 0, len(entries))
+func (i aliasListItem) Description() string {
+	return ""
+}
+
+func (i aliasListItem) FilterValue() string {
+	if i.title == "" {
+		return i.email
+	}
+	return i.title + " " + i.email
+}
+
+func buildAliasItems(aliases []db.Alias) []list.Item {
+	items := make([]list.Item, 0, len(aliases))
+	for _, a := range aliases {
+		items = append(items, aliasListItem{
+			title: strings.TrimSpace(a.Title),
+			email: a.Email,
+		})
+	}
+	return items
+}
+
+type senderListItem struct {
+	label string
+}
+
+func (i senderListItem) Title() string {
+	return i.label
+}
+
+func (i senderListItem) Description() string {
+	return ""
+}
+
+func (i senderListItem) FilterValue() string {
+	return i.label
+}
+
+func buildSenderItems(entries []senderListEntry) []list.Item {
+	items := make([]list.Item, 0, len(entries))
 	for _, entry := range entries {
-		if width < 1 {
-			width = 1
-		}
 		if entry.IsDomain {
-			label := entry.Domain
-			if width > 2 {
-				usable := width - 1
-				label = truncate(label, usable)
-				pad := usable - len([]rune(label))
-				if pad < 1 {
-					pad = 1
-				}
-				label = label + strings.Repeat(" ", pad) + "@"
-			}
-			rows = append(rows, table.Row{label})
+			items = append(items, senderListItem{label: "@" + entry.Domain})
 			continue
 		}
 		if entry.Sender != nil {
-			label := entry.Sender.SenderEmail
-			label = truncate(label, width)
-			rows = append(rows, table.Row{label})
+			items = append(items, senderListItem{label: entry.Sender.SenderEmail})
 		}
 	}
-	return rows
+	return items
 }
 
-// newAliasTable creates a new table model for the alias pane.
-func newAliasTable() table.Model {
-	t := table.New(
-		table.WithColumns(aliasColumns),
-		table.WithFocused(true),
-	)
-	s := table.DefaultStyles()
-	t.SetStyles(s)
-	return t
+// newAliasList creates a list model for the alias pane.
+func newAliasList() list.Model {
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = false
+	delegate.SetSpacing(0)
+	delegate.Styles.NormalTitle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("15")).
+		Padding(0, 0, 0, 1)
+	delegate.Styles.SelectedTitle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(colorFocused).
+		Foreground(lipgloss.Color("15"))
+
+	l := list.New(nil, delegate, 1, 1)
+	l.SetShowTitle(false)
+	l.SetShowFilter(false)
+	l.SetShowStatusBar(false)
+	l.SetShowPagination(false)
+	l.SetShowHelp(false)
+	l.SetFilteringEnabled(true)
+	l.DisableQuitKeybindings()
+	return l
 }
 
-// newSenderTable creates a new table model for the sender pane.
-// The column width is a placeholder; resizePanes sets the real width on WindowSizeMsg.
-func newSenderTable() table.Model {
-	t := table.New(
-		table.WithColumns([]table.Column{{Title: "Sender / Domain", Width: 40}}),
-		table.WithFocused(false),
-	)
-	s := table.DefaultStyles()
-	t.SetStyles(s)
-	return t
+// newSenderList creates a list model for the sender pane.
+func newSenderList() list.Model {
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = false
+	delegate.SetSpacing(0)
+	delegate.Styles.NormalTitle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("15")).
+		Padding(0, 0, 0, 1)
+	delegate.Styles.SelectedTitle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(colorFocused).
+		Foreground(lipgloss.Color("15"))
+
+	l := list.New(nil, delegate, 1, 1)
+	l.SetShowTitle(false)
+	l.SetShowFilter(false)
+	l.SetShowStatusBar(false)
+	l.SetShowPagination(false)
+	l.SetShowHelp(false)
+	l.SetFilteringEnabled(false)
+	l.DisableQuitKeybindings()
+	return l
 }

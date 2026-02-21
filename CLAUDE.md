@@ -109,6 +109,10 @@ This is safe as long as only one body section is requested per fetch call.
 
 Only KeePass entries whose **UserName** field contains `config.addyio.alias_domain` are imported. Entries without a matching username are silently ignored. The account name priority is: `Title` → URL stripped of `https://` prefix and trailing slash → `"<unnamed>"`.
 
+## Alias title field
+
+`aliases.title` is the single canonical title shown in the TUI. `UpsertAlias` uses a `CASE WHEN` to **preserve** the existing value if non-empty, so titles edited locally via the TUI (`r` key) survive sync. On first sync (empty title), the best available value is written: KeePass account name(s) joined with ", " > addy.io description. To change a title after it has been set, use `UpdateAliasTitle` (TUI) or edit the DB directly. A migration in `applyMigrations` renames the old `description` column to `title` for existing databases.
+
 ## UnilateralDataHandler bug in monitor
 
 `runIDLESession` registers a `UnilateralDataHandler.Mailbox` callback that overwrites `lastKnownCount` whenever the server pushes an EXISTS update during IDLE. After IDLE ends the code polls STATUS and compares `currentCount > lastKnownCount`. If the handler already updated `lastKnownCount` to the new value (which it will for any message that arrives while IDLE is active), the comparison is false and those messages are **not fetched**. Only messages that arrive in the window between IDLE closing and the STATUS response will be caught reliably. Fix: snapshot the count before entering IDLE and do not update it from the handler.
@@ -119,7 +123,7 @@ Only KeePass entries whose **UserName** field contains `config.addyio.alias_doma
 - Left pane: all aliases (Account | Alias Email | Active)
 - Right pane: known senders for the selected alias
 
-Key bindings: `Tab` switch pane, `↑/k` `↓/j` move, `a` add sender, `d` delete, `f` toggle flagged, `e` toggle domain rule for the selected sender domain, `q`/`Ctrl+C` quit.
+Key bindings: `Tab` switch pane, `↑/k` `↓/j` move, `n` add sender, `d` delete, `f` toggle flagged, `e` toggle domain rule for the selected sender domain, `r` rename alias (left pane), `q`/`Ctrl+C` quit.
 
 The add-sender form validates email format. Tab/Shift+Tab moves between form fields; Enter submits; Esc cancels.
 

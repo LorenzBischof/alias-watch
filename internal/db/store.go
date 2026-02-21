@@ -17,11 +17,11 @@ type Store struct {
 
 // Alias represents a row in the aliases table.
 type Alias struct {
-	Email       string
-	AddyID      string
-	Active      bool
-	Description string
-	SyncedAt    time.Time
+	Email    string
+	AddyID   string
+	Active   bool
+	Title    string
+	SyncedAt time.Time
 }
 
 // KnownSender represents a row in the known_senders table.
@@ -84,24 +84,28 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// UpsertAlias inserts or replaces an alias row.
+// UpsertAlias inserts or updates an alias row.
+// On conflict, title is only written if the existing value is empty,
+// so locally-edited titles survive sync.
 func (s *Store) UpsertAlias(a Alias) error {
 	_, err := s.db.Exec(`
-		INSERT INTO aliases (email, addy_id, active, description, synced_at)
+		INSERT INTO aliases (email, addy_id, active, title, synced_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(email) DO UPDATE SET
-			addy_id     = excluded.addy_id,
-			active      = excluded.active,
-			description = excluded.description,
-			synced_at   = excluded.synced_at`,
-		a.Email, a.AddyID, boolToInt(a.Active), a.Description, a.SyncedAt.UTC().Format(time.RFC3339),
+			addy_id   = excluded.addy_id,
+			active    = excluded.active,
+			title     = CASE WHEN aliases.title IS NULL OR aliases.title = ''
+			                 THEN excluded.title
+			                 ELSE aliases.title END,
+			synced_at = excluded.synced_at`,
+		a.Email, a.AddyID, boolToInt(a.Active), a.Title, a.SyncedAt.UTC().Format(time.RFC3339),
 	)
 	return err
 }
 
 // AllAliases returns all aliases in the database.
 func (s *Store) AllAliases() ([]Alias, error) {
-	rows, err := s.db.Query(`SELECT email, addy_id, active, description, synced_at FROM aliases`)
+	rows, err := s.db.Query(`SELECT email, addy_id, active, title, synced_at FROM aliases`)
 	if err != nil {
 		return nil, err
 	}
@@ -111,10 +115,12 @@ func (s *Store) AllAliases() ([]Alias, error) {
 		var a Alias
 		var activeInt int
 		var syncedAt string
-		if err := rows.Scan(&a.Email, &a.AddyID, &activeInt, &a.Description, &syncedAt); err != nil {
+		var title sql.NullString
+		if err := rows.Scan(&a.Email, &a.AddyID, &activeInt, &title, &syncedAt); err != nil {
 			return nil, err
 		}
 		a.Active = activeInt != 0
+		a.Title = title.String
 		a.SyncedAt, _ = time.Parse(time.RFC3339, syncedAt)
 		aliases = append(aliases, a)
 	}
@@ -187,16 +193,16 @@ func (s *Store) AccountsForAlias(aliasEmail string) ([]string, error) {
 
 // AliasAccountPair is one row of the flat alias→account view.
 type AliasAccountPair struct {
-	AliasEmail  string
-	Account     string
-	Description string
-	Active      bool
+	AliasEmail string
+	Account    string
+	Title      string
+	Active     bool
 }
 
 // AllAliasAccountPairs returns all alias→account rows (UNMAPPED if no accounts).
 func (s *Store) AllAliasAccountPairs() ([]AliasAccountPair, error) {
 	rows, err := s.db.Query(`
-		SELECT a.email, COALESCE(aa.account, 'UNMAPPED'), a.description, a.active
+		SELECT a.email, COALESCE(aa.account, 'UNMAPPED'), a.title, a.active
 		FROM aliases a
 		LEFT JOIN alias_accounts aa ON a.email = aa.alias_email
 		ORDER BY aa.account IS NULL ASC, a.email, aa.account`)
@@ -208,13 +214,19 @@ func (s *Store) AllAliasAccountPairs() ([]AliasAccountPair, error) {
 	for rows.Next() {
 		var p AliasAccountPair
 		var activeInt int
-		if err := rows.Scan(&p.AliasEmail, &p.Account, &p.Description, &activeInt); err != nil {
+		if err := rows.Scan(&p.AliasEmail, &p.Account, &p.Title, &activeInt); err != nil {
 			return nil, err
 		}
 		p.Active = activeInt != 0
 		pairs = append(pairs, p)
 	}
 	return pairs, rows.Err()
+}
+
+// UpdateAliasTitle updates the title field for an alias.
+func (s *Store) UpdateAliasTitle(email, title string) error {
+	_, err := s.db.Exec(`UPDATE aliases SET title = ? WHERE email = ?`, title, email)
+	return err
 }
 
 // UpsertKnownSender inserts or updates a known sender.
@@ -466,6 +478,17 @@ func (s *Store) UpdateKnownSender(ks KnownSender) error {
 }
 
 func applyMigrations(sqldb *sql.DB) error {
+	// Rename aliases.description → aliases.title.
+	hasDescription, err := hasColumn(sqldb, "aliases", "description")
+	if err != nil {
+		return err
+	}
+	if hasDescription {
+		if _, err := sqldb.Exec(`ALTER TABLE aliases RENAME COLUMN description TO title`); err != nil {
+			return fmt.Errorf("rename description to title: %w", err)
+		}
+	}
+
 	// Backfill alias-level domain rules from legacy match_type=domain rows.
 	hasMatchType, err := hasColumn(sqldb, "known_senders", "match_type")
 	if err != nil {
