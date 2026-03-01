@@ -1,0 +1,17 @@
+imap:
+  # Optional if set via env var IMAP_SERVER
+  server: "imap.example.com"
+  port: 993
+  # Optional if set via env var IMAP_USERNAME
+  username: "you@example.com"
+  # Required via env var IMAP_PASSWORD
+  folder: "INBOX"
+  tls: true
+
+db:
+  path: "~/.local/share/alias-watch/data.db"
+
+# Optional: notification push is disabled when ntfy_url/NTFY_URL is unset.
+# notify:
+#   ntfy_url: "https://ntfy.sh/your-topic"  # or set NTFY_URL
+#   ntfy_token: "your-token"  # optional (or set NTFY_TOKEN)

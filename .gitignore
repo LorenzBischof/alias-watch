@@ -1,0 +1,9 @@
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+data.db
+config.yaml
+/email-monitor
+result
