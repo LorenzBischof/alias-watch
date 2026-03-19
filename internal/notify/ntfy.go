@@ -35,6 +35,10 @@ type Notification struct {
 	// True when alias was auto-created during this event.
 	AliasIsNew    bool
 	DomainContext string // e.g. "known — 3 addresses seen" or "new domain"
+	TopSender     string
+	TopSenderHits int
+	TopDomain     string
+	TopDomainHits int
 }
 
 // Send posts a notification to ntfy.sh.
@@ -55,8 +59,15 @@ func (c *Client) Send(n Notification) error {
 	if n.AliasIsNew {
 		aliasStatus = "new (auto-added)"
 	}
-	body := fmt.Sprintf("From:    %s\nAlias:   %s  →  %s\nAlias status: %s\nSubject: %s\nDomain:  %s (%s)",
-		n.Sender, n.Alias, n.Account, aliasStatus, n.Subject, n.Domain, n.DomainContext)
+
+	historyLine := "none (0)"
+	if n.TopSenderHits > 0 || n.TopDomainHits > 0 {
+		historyLine = fmt.Sprintf("%s (%d), %s (%d)",
+			valueOrUnknown(n.TopSender), n.TopSenderHits, valueOrUnknown(n.TopDomain), n.TopDomainHits)
+	}
+
+	body := fmt.Sprintf("From:    %s\nAlias:   %s  →  %s\nAlias status: %s\nSubject: %s\nDomain:  %s (%s)\nHistory: %s",
+		n.Sender, n.Alias, n.Account, aliasStatus, n.Subject, n.Domain, n.DomainContext, historyLine)
 
 	req, err := http.NewRequest(http.MethodPost, c.NtfyURL, strings.NewReader(body))
 	if err != nil {
@@ -79,4 +90,11 @@ func (c *Client) Send(n Notification) error {
 		return fmt.Errorf("ntfy returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func valueOrUnknown(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "unknown"
+	}
+	return v
 }

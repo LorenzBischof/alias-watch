@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	imapclient "github.com/emersion/go-imap/v2/imapclient"
 	"github.com/lorenzbischof/alias-watch/internal/db"
 	"github.com/lorenzbischof/alias-watch/internal/notify"
-	imapclient "github.com/emersion/go-imap/v2/imapclient"
 )
 
 func TestProcessNewMessage_AutoAddsAliasWithTitleAndSendsDedicatedNotification(t *testing.T) {
@@ -72,6 +72,9 @@ func TestProcessNewMessage_AutoAddsAliasWithTitleAndSendsDedicatedNotification(t
 	if !strings.Contains(gotBody, "Alias status: new (auto-added)") {
 		t.Fatalf("expected alias status marker in body, got %q", gotBody)
 	}
+	if !strings.Contains(gotBody, "History: none (0)") {
+		t.Fatalf("expected empty history context in body, got %q", gotBody)
+	}
 }
 
 func TestProcessNewMessage_NewSenderOnExistingAliasUsesExistingAliasNotification(t *testing.T) {
@@ -89,6 +92,35 @@ func TestProcessNewMessage_NewSenderOnExistingAliasUsesExistingAliasNotification
 		SyncedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("seed alias: %v", err)
+	}
+	now := time.Now().UTC()
+	seedEmails := []db.Email{
+		{
+			AliasEmail: "existing@user.anonaddy.com",
+			FromAddr:   "noreply@github.com",
+			Subject:    "Seed 1",
+			ReceivedAt: now.Add(-5 * time.Minute),
+			MessageID:  "seed-1",
+		},
+		{
+			AliasEmail: "existing@user.anonaddy.com",
+			FromAddr:   "noreply@github.com",
+			Subject:    "Seed 2",
+			ReceivedAt: now.Add(-4 * time.Minute),
+			MessageID:  "seed-2",
+		},
+		{
+			AliasEmail: "existing@user.anonaddy.com",
+			FromAddr:   "status@github.com",
+			Subject:    "Seed 3",
+			ReceivedAt: now.Add(-3 * time.Minute),
+			MessageID:  "seed-3",
+		},
+	}
+	for _, e := range seedEmails {
+		if _, err := store.InsertEmail(e); err != nil {
+			t.Fatalf("seed email: %v", err)
+		}
 	}
 
 	var gotTitle string
@@ -130,6 +162,9 @@ func TestProcessNewMessage_NewSenderOnExistingAliasUsesExistingAliasNotification
 	}
 	if !strings.Contains(gotBody, "Alias status: existing") {
 		t.Fatalf("expected existing alias status in body, got %q", gotBody)
+	}
+	if !strings.Contains(gotBody, "History: noreply@github.com (2), github.com (3)") {
+		t.Fatalf("expected history context in body, got %q", gotBody)
 	}
 }
 

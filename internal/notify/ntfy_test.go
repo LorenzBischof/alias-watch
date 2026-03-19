@@ -18,6 +18,10 @@ func TestSend_DisabledWhenURLMissing(t *testing.T) {
 		Subject:       "PR merged",
 		Domain:        "github.com",
 		DomainContext: "known — 2 addresses seen",
+		TopSender:     "noreply@github.com",
+		TopSenderHits: 7,
+		TopDomain:     "github.com",
+		TopDomainHits: 11,
 	})
 	if err != nil {
 		t.Fatalf("send should be disabled without url, got: %v", err)
@@ -45,6 +49,10 @@ func TestSend_NewSender(t *testing.T) {
 		Subject:       "PR merged",
 		Domain:        "github.com",
 		DomainContext: "known — 2 addresses seen",
+		TopSender:     "noreply@github.com",
+		TopSenderHits: 7,
+		TopDomain:     "github.com",
+		TopDomainHits: 11,
 	})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -69,6 +77,9 @@ func TestSend_NewSender(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "Alias status: existing") {
 		t.Errorf("body missing alias status for existing alias, got: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "History: noreply@github.com (7), github.com (11)") {
+		t.Errorf("body missing history context, got: %s", gotBody)
 	}
 }
 
@@ -154,5 +165,8 @@ func TestSend_NewAliasAndSender(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "Alias status: new (auto-added)") {
 		t.Errorf("body missing alias new marker, got: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "History: none (0)") {
+		t.Errorf("body missing empty history context, got: %s", gotBody)
 	}
 }

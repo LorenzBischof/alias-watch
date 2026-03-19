@@ -273,6 +273,16 @@ func processNewMessage(ctx context.Context, opts MonitorOptions, headers map[str
 		account = "UNMAPPED"
 	}
 
+	// Gather historical context before inserting the current email.
+	topSender, topSenderHits, err := opts.Store.MostUsedSenderForAlias(aliasEmail)
+	if err != nil {
+		fmt.Printf("warn: lookup top sender for %s: %v\n", aliasEmail, err)
+	}
+	topDomain, topDomainHits, err := opts.Store.MostUsedDomainForAlias(aliasEmail)
+	if err != nil {
+		fmt.Printf("warn: lookup top domain for %s: %v\n", aliasEmail, err)
+	}
+
 	// Record the email
 	wasNew := !found
 	emailRecord := db.Email{
@@ -323,6 +333,10 @@ func processNewMessage(ctx context.Context, opts MonitorOptions, headers map[str
 		Domain:        senderDomain,
 		AliasIsNew:    aliasIsNew,
 		DomainContext: domainContext,
+		TopSender:     topSender,
+		TopSenderHits: topSenderHits,
+		TopDomain:     topDomain,
+		TopDomainHits: topDomainHits,
 	}
 	if err := opts.Notifier.Send(n); err != nil {
 		fmt.Printf("warn: send notification: %v\n", err)

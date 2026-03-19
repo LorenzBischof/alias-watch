@@ -438,3 +438,58 @@ func TestAliasLastSeen(t *testing.T) {
 		t.Fatalf("wrong latest ts for alias b: %v", got["b@user.anonaddy.com"])
 	}
 }
+
+func TestMostUsedSenderAndDomainForAlias(t *testing.T) {
+	s := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	alias := "abc@user.anonaddy.com"
+
+	emails := []Email{
+		{AliasEmail: alias, FromAddr: "a@github.com", Subject: "1", ReceivedAt: now.Add(-5 * time.Minute), MessageID: "m1"},
+		{AliasEmail: alias, FromAddr: "a@github.com", Subject: "2", ReceivedAt: now.Add(-4 * time.Minute), MessageID: "m2"},
+		{AliasEmail: alias, FromAddr: "noreply@alerts.github.com", Subject: "3", ReceivedAt: now.Add(-3 * time.Minute), MessageID: "m3"},
+		{AliasEmail: alias, FromAddr: "b@other.com", Subject: "4", ReceivedAt: now.Add(-2 * time.Minute), MessageID: "m4"},
+		{AliasEmail: "other@user.anonaddy.com", FromAddr: "z@elsewhere.com", Subject: "x", ReceivedAt: now.Add(-1 * time.Minute), MessageID: "m5"},
+	}
+	for _, e := range emails {
+		if _, err := s.InsertEmail(e); err != nil {
+			t.Fatalf("insert email: %v", err)
+		}
+	}
+
+	sender, senderCount, err := s.MostUsedSenderForAlias(alias)
+	if err != nil {
+		t.Fatalf("most used sender: %v", err)
+	}
+	if sender != "a@github.com" || senderCount != 2 {
+		t.Fatalf("want sender a@github.com (2), got %q (%d)", sender, senderCount)
+	}
+
+	domain, domainCount, err := s.MostUsedDomainForAlias(alias)
+	if err != nil {
+		t.Fatalf("most used domain: %v", err)
+	}
+	if domain != "github.com" || domainCount != 2 {
+		t.Fatalf("want domain github.com (2), got %q (%d)", domain, domainCount)
+	}
+}
+
+func TestMostUsedSenderAndDomainForAlias_Empty(t *testing.T) {
+	s := openTestDB(t)
+
+	sender, senderCount, err := s.MostUsedSenderForAlias("none@user.anonaddy.com")
+	if err != nil {
+		t.Fatalf("most used sender: %v", err)
+	}
+	if sender != "" || senderCount != 0 {
+		t.Fatalf("want empty sender stats, got %q (%d)", sender, senderCount)
+	}
+
+	domain, domainCount, err := s.MostUsedDomainForAlias("none@user.anonaddy.com")
+	if err != nil {
+		t.Fatalf("most used domain: %v", err)
+	}
+	if domain != "" || domainCount != 0 {
+		t.Fatalf("want empty domain stats, got %q (%d)", domain, domainCount)
+	}
+}

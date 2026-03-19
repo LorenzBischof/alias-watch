@@ -431,6 +431,48 @@ func (s *Store) EmailCountForAlias(aliasEmail string) (int, error) {
 	return count, err
 }
 
+// MostUsedSenderForAlias returns the most frequent from_addr for an alias from
+// historical emails, including how many times it appears.
+func (s *Store) MostUsedSenderForAlias(aliasEmail string) (string, int, error) {
+	var sender string
+	var count int
+	err := s.db.QueryRow(`
+		SELECT from_addr, COUNT(*) AS c
+		FROM emails
+		WHERE alias_email = ?
+		GROUP BY from_addr
+		ORDER BY c DESC, from_addr ASC
+		LIMIT 1`, aliasEmail).Scan(&sender, &count)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", 0, nil
+		}
+		return "", 0, err
+	}
+	return sender, count, nil
+}
+
+// MostUsedDomainForAlias returns the most frequent sender domain for an alias
+// from historical emails, including how many times it appears.
+func (s *Store) MostUsedDomainForAlias(aliasEmail string) (string, int, error) {
+	var domain string
+	var count int
+	err := s.db.QueryRow(`
+		SELECT LOWER(SUBSTR(from_addr, INSTR(from_addr, '@') + 1)) AS domain, COUNT(*) AS c
+		FROM emails
+		WHERE alias_email = ? AND INSTR(from_addr, '@') > 1
+		GROUP BY domain
+		ORDER BY c DESC, domain ASC
+		LIMIT 1`, aliasEmail).Scan(&domain, &count)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", 0, nil
+		}
+		return "", 0, err
+	}
+	return domain, count, nil
+}
+
 func scanKnownSenders(rows *sql.Rows) ([]KnownSender, error) {
 	var senders []KnownSender
 	for rows.Next() {
